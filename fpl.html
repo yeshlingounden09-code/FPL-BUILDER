@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>FPL Dashboard</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f9f9f9; margin: 0; padding: 20px; }
+    h1, h2 { color: #222; }
+    .container { display: flex; gap: 20px; flex-wrap: wrap; }
+    .panel { flex: 1; min-width: 400px; background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+    button { padding: 6px 12px; margin: 5px; cursor: pointer; border: 1px solid #444; border-radius: 5px; background: #fff; }
+    button.active { background: #222; color: #fff; }
+    table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+    th, td { border: 1px solid #ddd; padding: 6px; text-align: center; }
+    th { background: #333; color: #fff; }
+    label { display: flex; align-items: center; gap: 5px; margin: 10px 0; }
+    .error { color: red; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>⚽ FPL Dashboard</h1>
+  <p>Live stats from the official Fantasy Premier League API.</p>
+
+  <div class="container">
+    <!-- Best Players Panel -->
+    <div class="panel">
+      <h2>📋 Best Players (by Total Points)</h2>
+      <div>
+        <button onclick="setPosition('ALL')" class="active">All</button>
+        <button onclick="setPosition('GK')">Goalkeepers</button>
+        <button onclick="setPosition('DEF')">Defenders</button>
+        <button onclick="setPosition('MID')">Midfielders</button>
+        <button onclick="setPosition('FWD')">Forwards</button>
+      </div>
+      <label>
+        <input type="checkbox" id="teamFilterToggle" onchange="renderPlayers()"> 
+        Show only players from top likely winning teams
+      </label>
+      <div id="player-list"></div>
+    </div>
+
+    <!-- Likely Winning Teams Panel -->
+    <div class="panel">
+      <h2>🏆 Teams Most Likely to Win</h2>
+      <p>(Based on lowest fixture difficulty for the next gameweek)</p>
+      <div id="team-list"></div>
+    </div>
+  </div>
+
+  <script>
+    const FPL_BASE = "https://fantasy.premierleague.com/api";
+    const PROXIES = [
+      url => `https://api.allorigins.win/raw?url=${url}`,
+      url => `https://corsproxy.io/?${url}`
+    ];
+
+    let players = [];
+    let teams = [];
+    let fixtures = [];
+    let positionFilter = "ALL";
+    let winningTeams = [];
+
+    async function fetchWithFallback(endpoint) {
+      for (let makeUrl of PROXIES) {
+        try {
+          let res = await fetch(makeUrl(`${FPL_BASE}/${endpoint}`));
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          return await res.json();
+        } catch (err) {
+          console.warn(`Proxy failed for ${endpoint}:`, err.message);
+        }
+      }
+      throw new Error("All proxies failed for " + endpoint);
+    }
+
+    async function loadData() {
+      try {
+        // Fetch bootstrap data (players + teams)
+        const data = await fetchWithFallback("bootstrap-static/");
+        players = data.elements;
+        teams = data.teams;
+
+        // Fetch fixtures
+        fixtures = await fetchWithFallback("fixtures/");
+
+        findWinningTeams();
+        renderTeams();
+        renderPlayers();
+      } catch (err) {
+        document.getElementById("player-list").innerHTML = `<p class="error">⚠️ Failed to fetch FPL data. Please refresh or try later.</p>`;
+        console.error(err);
+      }
+    }
+
+    function findWinningTeams() {
+      const upcoming = fixtures.filter(f => f.event && !f.finished);
+      let teamScores = {};
+
+      upcoming.forEach(f => {
+        teamScores[f.team_h] = Math.min(teamScores[f.team_h] || 10, f.team_h_difficulty);
+        teamScores[f.team_a] = Math.min(teamScores[f.team_a] || 10, f.team_a_difficulty);
+      });
+
+      let ranked = Object.entries(teamScores).sort((a, b) => a[1] - b[1]);
+      winningTeams = ranked.slice(0, 5).map(t => parseInt(t[0]));
+    }
+
+    function renderPlayers() {
+      if (!players.length) {
+        document.getElementById("player-list").innerHTML = "<p class='error'>No player data available.</p>";
+        return;
+      }
+
+      const posMap = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"};
+      let ranked = [...players].sort((a, b) => b.total_points - a.total_points);
+
+      if (positionFilter !== "ALL") {
+        ranked = ranked.filter(p => posMap[p.element_type] === positionFilter);
+      }
+
+      if (document.getElementById("teamFilterToggle").checked) {
+        ranked = ranked.filter(p => winningTeams.includes(p.team));
+      }
+
+      let html = `<table>
+        <tr><th>Name</th><th>Pos</th><th>Team</th><th>Cost</th><th>Total Points</th><th>Form</th></tr>`;
+      ranked.slice(0, 20).forEach(p => {
+        let pos = posMap[p.element_type];
+        let teamName = teams.find(t => t.id === p.team)?.name || p.team;
+        html += `<tr>
+                  <td>${p.web_name}</td>
+                  <td>${pos}</td>
+                  <td>${teamName}</td>
+                  <td>£${(p.now_cost/10).toFixed(1)}m</td>
+                  <td>${p.total_points}</td>
+                  <td>${p.form}</td>
+                </tr>`;
+      });
+      html += "</table>";
+      document.getElementById("player-list").innerHTML = html;
+    }
+
+    function renderTeams() {
+      if (!fixtures.length) {
+        document.getElementById("team-list").innerHTML = "<p class='error'>No fixture data available.</p>";
+        return;
+      }
+
+      let teamScores = {};
+      fixtures.filter(f => f.event && !f.finished).forEach(f => {
+        teamScores[f.team_h] = Math.min(teamScores[f.team_h] || 10, f.team_h_difficulty);
+        teamScores[f.team_a] = Math.min(teamScores[f.team_a] || 10, f.team_a_difficulty);
+      });
+
+      let ranked = Object.entries(teamScores).sort((a, b) => a[1] - b[1]);
+      let html = `<table><tr><th>Team</th><th>Fixture Difficulty</th></tr>`;
+      ranked.slice(0, 10).forEach(([id, diff]) => {
+        let name = teams.find(t => t.id == id)?.name || id;
+        html += `<tr><td>${name}</td><td>${diff}</td></tr>`;
+      });
+      html += "</table>";
+      document.getElementById("team-list").innerHTML = html;
+    }
+
+    function setPosition(pos) {
+      positionFilter = pos;
+      document.querySelectorAll("button").forEach(b => b.classList.remove("active"));
+      document.querySelectorAll("button").forEach(b => {
+        if (b.textContent === "All" && pos === "ALL") b.classList.add("active");
+        if (b.textContent.includes("Goalkeepers") && pos === "GK") b.classList.add("active");
+        if (b.textContent.includes("Defenders") && pos === "DEF") b.classList.add("active");
+        if (b.textContent.includes("Midfielders") && pos === "MID") b.classList.add("active");
+        if (b.textContent.includes("Forwards") && pos === "FWD") b.classList.add("active");
+      });
+      renderPlayers();
+    }
+
+    loadData();
+  </script>
+</body>
+</html>
